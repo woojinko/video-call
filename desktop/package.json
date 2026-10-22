@@ -1,0 +1,19 @@
+{
+  "name": "desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Electron shell for the video call client",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json && wait-on http://localhost:5173 && electron . --dev",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "electron": "^45.0.0",
+    "typescript": "^5.9.3",
+    "wait-on": "^9.0.1"
+  }
+}

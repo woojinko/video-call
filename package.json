@@ -1,0 +1,27 @@
+{
+  "name": "video-call",
+  "private": true,
+  "version": "0.1.0",
+  "description": "1-on-1 WebRTC video call: React + TypeScript client, Node.js WebSocket signaling server, Electron desktop shell.",
+  "workspaces": [
+    "server",
+    "client",
+    "desktop"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:desktop": "concurrently -k -n server,client,desktop -c blue,green,magenta \"npm run dev -w server\" \"npm run dev -w client\" \"npm run dev -w desktop\"",
+    "build": "npm run build -w server && npm run build -w client && npm run build -w desktop",
+    "start:desktop": "npm run build -w client && npm run build -w desktop && npm run start -w desktop",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client && npm run typecheck -w desktop",
+    "test": "npm run test -w server",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
