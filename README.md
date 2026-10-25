@@ -34,7 +34,7 @@ Join the same room from the Electron window and a browser tab. On macOS, the fir
 
 STUN alone fails when both peers sit behind symmetric NATs or strict firewalls. TURN fixes that by relaying the media.
 
-The signaling server serves `GET /ice-config` on its own port (8080). It returns STUN servers plus TURN credentials that expire after `TURN_TTL_SECONDS`. The credentials use the coturn REST API scheme (HMAC-SHA1 of `expiry:user` with a shared secret), so the secret never reaches the browser. The client fetches this config before every new peer connection. If the fetch fails, it falls back to public STUN.
+The signaling server serves `GET /ice-config` on its own port (8080). It returns STUN servers plus TURN credentials that expire after `TURN_TTL_SECONDS`. The credentials use the coturn REST API scheme (HMAC-SHA1 of `expiry:user` with a shared secret), so the secret never reaches the browser. The client starts fetching this config when you click Join, and reuses it if it's under 5 minutes old by the time a peer connection is created. Otherwise it fetches a fresh one. An ICE restart mid-call always fetches fresh credentials. If the config can't be loaded or is invalid, the call ends with an error. There is no silent fallback to STUN, because that would skip TURN and a relay-only policy.
 
 | Env var (signaling server) | Default | Meaning |
 |---|---|---|
@@ -48,12 +48,14 @@ Run coturn locally with the config in `coturn/turnserver.conf`:
 
 ```bash
 # Linux, or Docker Desktop with host networking enabled
-TURN_SECRET=dev-secret docker compose up coturn
+TURN_SECRET=dev-secret TURN_ALLOWED_PEER_IP=$(hostname -I | cut -d' ' -f1) docker compose up coturn
 
 # macOS without Docker host networking
 brew install coturn
-turnserver -c coturn/turnserver.conf --static-auth-secret=dev-secret
+turnserver -c coturn/turnserver.conf --static-auth-secret=dev-secret --allowed-peer-ip=$(ipconfig getifaddr en0)
 ```
+
+The config blocks relaying to private and loopback addresses, so a TURN credential can't be used to reach machines on your network. When both test peers run on one machine, each relays to the other's relay address, which is your own LAN IP. `--allowed-peer-ip` permits exactly that address. Don't pass it in production.
 
 **Prove TURN works.** Force relay-only, then join a call:
 
@@ -63,7 +65,7 @@ TURN_URLS='turn:localhost:3478?transport=udp' TURN_SECRET=dev-secret ICE_TRANSPO
 
 The call should still connect. In `chrome://webrtc-internals`, the selected candidate pair should be `relay`. If coturn isn't running, the call stays on "Connecting…".
 
-For production, put coturn on a public host, add TLS (`turns:` on 5349), open the relay port range, and uncomment the `denied-peer-ip` lines.
+For production, put coturn on a public host, add TLS (`turns:` on 5349), and open the relay port range.
 
 ## Tests
 

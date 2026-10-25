@@ -44,3 +44,12 @@ test('half-configured or invalid TURN settings fail at startup', () => {
     /positive integer/,
   );
 });
+
+test('malformed STUN/TURN URLs fail at startup instead of breaking every client', () => {
+  assert.throws(() => iceOptionsFromEnv({ STUN_URLS: 'stun.example.com:3478' }), /stun: or stuns:/);
+  assert.throws(
+    () => iceOptionsFromEnv({ TURN_URLS: 'turn.example.com:3478', TURN_SECRET: 'x' }),
+    /turn: or turns:/,
+  );
+  assert.throws(() => iceOptionsFromEnv({ TURN_URLS: 'stun:localhost:3478', TURN_SECRET: 'x' }), /turn: or turns:/);
+});

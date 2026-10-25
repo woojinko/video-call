@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SignalingClient } from '../signaling/SignalingClient';
 import type { IceCandidate, ServerMessage } from '../signaling/protocol';
-import { fetchRtcConfig } from './iceConfig';
+import { RtcConfigSource } from './iceConfig';
 
 export type CallStatus =
   | 'idle' // not in a room
@@ -47,6 +47,13 @@ export function useVideoCall(): VideoCall {
   // Signaling messages are processed strictly in order; WebRTC calls are async
   // and interleaving setRemoteDescription/addIceCandidate causes subtle bugs.
   const messageQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const rtcConfigRef = useRef(new RtcConfigSource(SIGNALING_URL));
+
+  const enqueue = useCallback((label: string, task: () => Promise<void>) => {
+    messageQueueRef.current = messageQueueRef.current
+      .then(task)
+      .catch((err: unknown) => console.error('[webrtc] failed handling', label, err));
+  }, []);
 
   const closePeerConnection = useCallback(() => {
     const pc = pcRef.current;
@@ -91,22 +98,60 @@ export function useVideoCall(): VideoCall {
           break;
         case 'failed':
           setStatus('reconnecting');
-          pc.restartIce();
+          // TURN credentials from call setup may have expired by now; restart with fresh ones.
+          enqueue('ice-restart', async () => {
+            try {
+              const rtcConfig = await rtcConfigRef.current.fresh();
+              if (pcRef.current !== pc) return;
+              pc.setConfiguration(rtcConfig);
+            } catch (err) {
+              console.warn('[webrtc] could not refresh ICE config, restarting with the old one:', err);
+            }
+            if (pcRef.current === pc) pc.restartIce();
+          });
           break;
       }
     };
 
     return pc;
-  }, [closePeerConnection]);
+  }, [closePeerConnection, enqueue]);
 
-  // STUN/TURN config comes from the signaling server (TURN credentials expire, so fetch
-  // per connection). Returns null if the user hung up while the fetch was in flight.
+  const stopLocalMedia = useCallback(() => {
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    setLocalStream(null);
+  }, []);
+
+  const hangUp = useCallback(() => {
+    signalingRef.current?.send({ type: 'leave' });
+    signalingRef.current?.close();
+    signalingRef.current = null;
+    closePeerConnection();
+    stopLocalMedia();
+    messageQueueRef.current = Promise.resolve();
+    setRoomId(null);
+    setStatus((s) => (s === 'room-full' || s === 'error' ? s : 'idle'));
+  }, [closePeerConnection, stopLocalMedia]);
+
+  // STUN/TURN config comes from the signaling server. Returns null if the user hung up while
+  // it loaded, or if it couldn't be loaded (then the call ends with a visible error rather than
+  // silently skipping TURN or a relay-only policy).
   const preparePeerConnection = useCallback(
     async (signaling: SignalingClient): Promise<RTCPeerConnection | null> => {
-      const rtcConfig = await fetchRtcConfig(SIGNALING_URL);
-      return signalingRef.current === signaling ? createPeerConnection(rtcConfig) : null;
+      try {
+        const rtcConfig = await rtcConfigRef.current.get();
+        return signalingRef.current === signaling ? createPeerConnection(rtcConfig) : null;
+      } catch (err) {
+        console.error('[webrtc] could not set up the peer connection:', err);
+        if (signalingRef.current === signaling) {
+          setError('Could not load connection settings from the server.');
+          setStatus('error');
+          hangUp();
+        }
+        return null;
+      }
     },
-    [createPeerConnection],
+    [createPeerConnection, hangUp],
   );
 
   const flushPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
@@ -167,6 +212,7 @@ export function useVideoCall(): VideoCall {
         case 'peer-left':
           closePeerConnection();
           setStatus('waiting');
+          rtcConfigRef.current.prefetch(); // Ready for whoever joins next.
           break;
 
         case 'room-full':
@@ -182,28 +228,12 @@ export function useVideoCall(): VideoCall {
     [closePeerConnection, preparePeerConnection, flushPendingCandidates],
   );
 
-  const stopLocalMedia = useCallback(() => {
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    setLocalStream(null);
-  }, []);
-
-  const hangUp = useCallback(() => {
-    signalingRef.current?.send({ type: 'leave' });
-    signalingRef.current?.close();
-    signalingRef.current = null;
-    closePeerConnection();
-    stopLocalMedia();
-    messageQueueRef.current = Promise.resolve();
-    setRoomId(null);
-    setStatus((s) => (s === 'room-full' || s === 'error' ? s : 'idle'));
-  }, [closePeerConnection, stopLocalMedia]);
-
   const join = useCallback(
     async (requestedRoomId: string) => {
       setError(null);
       setStatus('starting');
       setRoomId(requestedRoomId);
+      rtcConfigRef.current.prefetch(); // Loads while the camera starts.
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -218,11 +248,7 @@ export function useVideoCall(): VideoCall {
         signalingRef.current = signaling;
         await signaling.connect();
 
-        signaling.onMessage((message) => {
-          messageQueueRef.current = messageQueueRef.current
-            .then(() => handleMessage(message))
-            .catch((err: unknown) => console.error('[webrtc] failed handling', message.type, err));
-        });
+        signaling.onMessage((message) => enqueue(message.type, () => handleMessage(message)));
         signaling.onClose(() => {
           if (signalingRef.current === signaling) {
             setError('Lost connection to the signaling server.');
@@ -244,7 +270,7 @@ export function useVideoCall(): VideoCall {
         hangUp();
       }
     },
-    [handleMessage, hangUp],
+    [enqueue, handleMessage, hangUp],
   );
 
   const toggleMic = useCallback(() => {

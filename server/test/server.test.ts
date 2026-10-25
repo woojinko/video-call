@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createConnection } from 'node:net';
 import { WebSocket } from 'ws';
 import { createSignalingServer } from '../src/server.js';
 import type { IceConfig, ServerMessage } from '../src/protocol.js';
@@ -102,4 +103,33 @@ test('GET /ice-config serves STUN plus fresh TURN credentials on the signaling p
   assert.equal((await fetch(`http://127.0.0.1:${port}/nope`)).status, 404);
 
   await server.close();
+});
+
+test('a malformed HTTP request line gets an error response instead of crashing the server', async () => {
+  const server = createSignalingServer({ port: 0, host: '127.0.0.1' });
+  const port = await server.ready;
+
+  const reply = await new Promise<string>((resolve, reject) => {
+    const socket = createConnection(port, '127.0.0.1', () => socket.write('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n'));
+    let data = '';
+    socket.on('data', (chunk) => (data += chunk.toString()));
+    socket.on('end', () => resolve(data));
+    socket.on('error', reject);
+  });
+  assert.match(reply, /^HTTP\/1\.1 404/);
+
+  // Still serving afterwards.
+  assert.equal((await fetch(`http://127.0.0.1:${port}/ice-config`)).status, 200);
+  await server.close();
+});
+
+test('starting on a port that is already taken rejects `ready` instead of crashing', async () => {
+  const first = createSignalingServer({ port: 0, host: '127.0.0.1' });
+  const port = await first.ready;
+
+  const second = createSignalingServer({ port, host: '127.0.0.1' });
+  await assert.rejects(second.ready, /EADDRINUSE/);
+
+  await second.close();
+  await first.close();
 });

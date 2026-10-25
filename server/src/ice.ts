@@ -20,6 +20,9 @@ export interface IceOptions {
 
 export const DEFAULT_ICE_OPTIONS: IceOptions = { stunUrls: DEFAULT_STUN_URLS, relayOnly: false };
 
+const STUN_URL_PATTERN = /^stuns?:\S+$/;
+const TURN_URL_PATTERN = /^turns?:\S+$/;
+
 function splitList(value: string | undefined): string[] {
   return (value ?? '')
     .split(',')
@@ -33,6 +36,14 @@ export function iceOptionsFromEnv(env: Record<string, string | undefined>): IceO
   const turnUrls = splitList(env.TURN_URLS);
   const secret = env.TURN_SECRET ?? '';
   const relayOnly = env.ICE_TRANSPORT_POLICY === 'relay';
+
+  // A bad URL would make every client's RTCPeerConnection constructor throw, so fail at startup instead.
+  for (const url of stunUrls) {
+    if (!STUN_URL_PATTERN.test(url)) throw new Error(`STUN_URLS entry must start with stun: or stuns:, got "${url}"`);
+  }
+  for (const url of turnUrls) {
+    if (!TURN_URL_PATTERN.test(url)) throw new Error(`TURN_URLS entry must start with turn: or turns:, got "${url}"`);
+  }
 
   if (env.ICE_TRANSPORT_POLICY !== undefined && env.ICE_TRANSPORT_POLICY !== 'relay' && env.ICE_TRANSPORT_POLICY !== 'all') {
     throw new Error(`ICE_TRANSPORT_POLICY must be "all" or "relay", got "${env.ICE_TRANSPORT_POLICY}"`);

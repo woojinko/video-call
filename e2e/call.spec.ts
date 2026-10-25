@@ -43,3 +43,21 @@ test('a third person is turned away, and hang-up returns the other peer to waiti
   await b.getByRole('button', { name: 'Hang up' }).click();
   await expect(a.getByText('Waiting for the other person')).toBeVisible();
 });
+
+test('a broken /ice-config ends the call with a visible error instead of silently skipping TURN', async ({ context }) => {
+  // Simulates a proxy answering the config path with an HTML error page.
+  await context.route('**/ice-config', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Bad gateway</html>' }),
+  );
+  const room = `badcfg-${Date.now()}`;
+  const alice = await context.newPage();
+  const bob = await context.newPage();
+
+  await joinRoom(alice, room);
+  await expect(alice.getByText('Waiting for the other person')).toBeVisible();
+  await joinRoom(bob, room);
+
+  // Alice is the offerer, so she needs the config first; she fails and leaves, and Bob goes back to waiting.
+  await expect(alice.getByText('Could not load connection settings from the server.')).toBeVisible();
+  await expect(bob.getByText('Waiting for the other person')).toBeVisible();
+});

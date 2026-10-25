@@ -32,14 +32,16 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
 
   // Plain HTTP for /ice-config; WebSocket upgrades on the same port go to `wss`.
   const http = createServer((req, res) => {
-    const { pathname } = new URL(req.url ?? '/', 'http://localhost');
+    // Plain string split, not `new URL`: a malformed request line must not be able to throw here.
+    const pathname = (req.url ?? '/').split('?')[0];
     if (req.method === 'GET' && pathname === '/ice-config') {
       res.writeHead(200, {
         'Content-Type': 'application/json',
         // Credentials are time-limited and minted per request; never cache them.
         'Cache-Control': 'no-store',
-        // The client runs on another origin (Vite :5173, Electron file://). The endpoint
-        // is unauthenticated anyway, so CORS adds no protection; the short TTL does.
+        // The client runs on another origin (Vite :5173, Electron file://). The endpoint is
+        // unauthenticated, so an origin allowlist wouldn't stop non-browser callers anyway.
+        // TODO: require auth before exposing this publicly (see README "Known limitations").
         'Access-Control-Allow-Origin': '*',
       });
       res.end(JSON.stringify(buildIceConfig(ice, Date.now())));
@@ -56,6 +58,9 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
     });
     http.once('error', reject);
   });
+  // `ws` re-emits every HTTP server error on `wss`; without a listener that re-emit is an
+  // uncaught exception. Startup errors (EADDRINUSE) reach callers through `ready` above.
+  wss.on('error', (err) => log('[server error]', err.message));
   http.listen(port, host);
 
   wss.on('connection', (socket: AliveSocket, request) => {
