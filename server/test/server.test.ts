@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import { createSignalingServer } from '../src/server.js';
-import type { ServerMessage } from '../src/protocol.js';
+import type { IceConfig, ServerMessage } from '../src/protocol.js';
 
 /** Small helper: a ws client that buffers messages so tests can await the next one. */
 function connect(url: string) {
@@ -79,5 +79,27 @@ test('malformed messages get an error reply instead of crashing the server', asy
   assert.deepEqual(await c.next(), { type: 'error', message: 'Join a room first' });
 
   c.ws.close();
+  await server.close();
+});
+
+test('GET /ice-config serves STUN plus fresh TURN credentials on the signaling port', async () => {
+  const server = createSignalingServer({
+    port: 0,
+    host: '127.0.0.1',
+    ice: { stunUrls: ['stun:stun.example.com'], turn: { urls: ['turn:127.0.0.1:3478'], secret: 's3cret', ttlSeconds: 60 }, relayOnly: false },
+  });
+  const port = await server.ready;
+
+  const res = await fetch(`http://127.0.0.1:${port}/ice-config`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  const config = (await res.json()) as IceConfig;
+  assert.deepEqual(config.iceServers[0], { urls: ['stun:stun.example.com'] });
+  assert.deepEqual(config.iceServers[1]?.urls, ['turn:127.0.0.1:3478']);
+  assert.match(config.iceServers[1]?.username ?? '', /^\d+:video-call$/);
+
+  assert.equal((await fetch(`http://127.0.0.1:${port}/nope`)).status, 404);
+
   await server.close();
 });

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { createServer, type Server as HttpServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { buildIceConfig, DEFAULT_ICE_OPTIONS, type IceOptions } from './ice.js';
 import { MAX_MESSAGE_BYTES, parseClientMessage, type ServerMessage } from './protocol.js';
 import { RoomManager, type Peer } from './rooms.js';
 
@@ -8,10 +10,13 @@ export interface SignalingServerOptions {
   host?: string;
   /** How often to ping clients to detect dead connections. */
   heartbeatMs?: number;
+  /** STUN/TURN settings served at GET /ice-config. Defaults to public STUN only. */
+  ice?: IceOptions;
   log?: (...args: unknown[]) => void;
 }
 
 export interface SignalingServer {
+  http: HttpServer;
   wss: WebSocketServer;
   rooms: RoomManager;
   /** Resolves with the bound port (useful when port 0 is passed in tests). */
@@ -22,17 +27,36 @@ export interface SignalingServer {
 type AliveSocket = WebSocket & { isAlive?: boolean };
 
 export function createSignalingServer(options: SignalingServerOptions): SignalingServer {
-  const { port, host, heartbeatMs = 30_000, log = () => {} } = options;
+  const { port, host, heartbeatMs = 30_000, ice = DEFAULT_ICE_OPTIONS, log = () => {} } = options;
   const rooms = new RoomManager(2);
-  const wss = new WebSocketServer({ port, host, maxPayload: MAX_MESSAGE_BYTES });
+
+  // Plain HTTP for /ice-config; WebSocket upgrades on the same port go to `wss`.
+  const http = createServer((req, res) => {
+    const { pathname } = new URL(req.url ?? '/', 'http://localhost');
+    if (req.method === 'GET' && pathname === '/ice-config') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        // Credentials are time-limited and minted per request; never cache them.
+        'Cache-Control': 'no-store',
+        // The client runs on another origin (Vite :5173, Electron file://). The endpoint
+        // is unauthenticated anyway, so CORS adds no protection; the short TTL does.
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify(buildIceConfig(ice, Date.now())));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  const wss = new WebSocketServer({ server: http, maxPayload: MAX_MESSAGE_BYTES });
 
   const ready = new Promise<number>((resolve, reject) => {
-    wss.once('listening', () => {
-      const address = wss.address();
+    http.once('listening', () => {
+      const address = http.address();
       resolve(typeof address === 'object' && address ? address.port : port);
     });
-    wss.once('error', reject);
+    http.once('error', reject);
   });
+  http.listen(port, host);
 
   wss.on('connection', (socket: AliveSocket, request) => {
     const peer: Peer = {
@@ -99,6 +123,7 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
   wss.on('close', () => clearInterval(heartbeat));
 
   return {
+    http,
     wss,
     rooms,
     ready,
@@ -106,7 +131,7 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
       new Promise<void>((resolve) => {
         clearInterval(heartbeat);
         for (const client of wss.clients) client.terminate();
-        wss.close(() => resolve());
+        wss.close(() => http.close(() => resolve()));
       }),
   };
 }

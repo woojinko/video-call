@@ -12,6 +12,18 @@ export interface IceCandidate {
   usernameFragment?: string | null;
 }
 
+export interface IceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+/** Body of `GET /ice-config` on the signaling server. */
+export interface IceConfig {
+  iceServers: IceServer[];
+  iceTransportPolicy?: 'all' | 'relay';
+}
+
 export type ClientMessage =
   | { type: 'join'; roomId: string }
   | { type: 'offer'; sdp: SessionDescription }

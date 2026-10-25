@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SignalingClient } from '../signaling/SignalingClient';
 import type { IceCandidate, ServerMessage } from '../signaling/protocol';
+import { fetchRtcConfig } from './iceConfig';
 
 export type CallStatus =
   | 'idle' // not in a room
@@ -13,12 +14,6 @@ export type CallStatus =
   | 'error';
 
 const SIGNALING_URL: string = import.meta.env.VITE_SIGNALING_URL ?? 'ws://localhost:8080';
-
-// Public STUN lets peers discover their public address. For calls across strict NATs
-// you also need a TURN server (relay) — see README "Ideas for improvements".
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-};
 
 export interface VideoCall {
   status: CallStatus;
@@ -66,9 +61,9 @@ export function useVideoCall(): VideoCall {
     setRemoteStream(null);
   }, []);
 
-  const createPeerConnection = useCallback((): RTCPeerConnection => {
+  const createPeerConnection = useCallback((rtcConfig: RTCConfiguration): RTCPeerConnection => {
     closePeerConnection();
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(rtcConfig);
     pcRef.current = pc;
 
     const stream = localStreamRef.current;
@@ -104,6 +99,16 @@ export function useVideoCall(): VideoCall {
     return pc;
   }, [closePeerConnection]);
 
+  // STUN/TURN config comes from the signaling server (TURN credentials expire, so fetch
+  // per connection). Returns null if the user hung up while the fetch was in flight.
+  const preparePeerConnection = useCallback(
+    async (signaling: SignalingClient): Promise<RTCPeerConnection | null> => {
+      const rtcConfig = await fetchRtcConfig(SIGNALING_URL);
+      return signalingRef.current === signaling ? createPeerConnection(rtcConfig) : null;
+    },
+    [createPeerConnection],
+  );
+
   const flushPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
     const pending = pendingCandidatesRef.current;
     pendingCandidatesRef.current = [];
@@ -123,7 +128,8 @@ export function useVideoCall(): VideoCall {
         case 'peer-joined': {
           // We were here first, so we are the caller.
           setStatus('connecting');
-          const pc = createPeerConnection();
+          const pc = await preparePeerConnection(signaling);
+          if (!pc) return;
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           signaling.send({ type: 'offer', sdp: { type: 'offer', sdp: offer.sdp ?? '' } });
@@ -132,7 +138,8 @@ export function useVideoCall(): VideoCall {
 
         case 'offer': {
           setStatus('connecting');
-          const pc = pcRef.current ?? createPeerConnection();
+          const pc = pcRef.current ?? (await preparePeerConnection(signaling));
+          if (!pc) return;
           await pc.setRemoteDescription(message.sdp);
           await flushPendingCandidates(pc);
           const answer = await pc.createAnswer();
@@ -172,7 +179,7 @@ export function useVideoCall(): VideoCall {
           break;
       }
     },
-    [closePeerConnection, createPeerConnection, flushPendingCandidates],
+    [closePeerConnection, preparePeerConnection, flushPendingCandidates],
   );
 
   const stopLocalMedia = useCallback(() => {
