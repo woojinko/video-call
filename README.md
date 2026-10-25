@@ -30,6 +30,43 @@ npm run dev:desktop    # server + Vite + an Electron window (DevTools detached)
 
 Join the same room from the Electron window and a browser tab. On macOS, the first run asks for camera and microphone access for Electron.
 
+## TURN
+
+STUN alone fails when both peers sit behind symmetric NATs or strict firewalls. TURN fixes that by relaying the media.
+
+The signaling server serves `GET /ice-config` on its own port (8080). It returns STUN servers plus TURN credentials that expire after `TURN_TTL_SECONDS`. The credentials use the coturn REST API scheme (HMAC-SHA1 of `expiry:user` with a shared secret), so the secret never reaches the browser. The client starts fetching this config when you click Join, and reuses it if it's under 5 minutes old by the time a peer connection is created. Otherwise it fetches a fresh one. An ICE restart mid-call always fetches fresh credentials. If the config can't be loaded or is invalid, the call ends with an error. There is no silent fallback to STUN, because that would skip TURN and a relay-only policy.
+
+| Env var (signaling server) | Default | Meaning |
+|---|---|---|
+| `TURN_URLS` | unset (TURN off) | Comma-separated, e.g. `turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp` |
+| `TURN_SECRET` | unset | Must match coturn's `static-auth-secret`. Set together with `TURN_URLS` |
+| `TURN_TTL_SECONDS` | `3600` | Credential lifetime |
+| `STUN_URLS` | Google's public STUN | Comma-separated; empty string disables STUN |
+| `ICE_TRANSPORT_POLICY` | `all` | `relay` forces every call through TURN |
+
+Run coturn locally with the config in `coturn/turnserver.conf`:
+
+```bash
+# Linux, or Docker Desktop with host networking enabled
+TURN_SECRET=dev-secret TURN_ALLOWED_PEER_IP=$(hostname -I | cut -d' ' -f1) docker compose up coturn
+
+# macOS without Docker host networking
+brew install coturn
+turnserver -c coturn/turnserver.conf --static-auth-secret=dev-secret --allowed-peer-ip=$(ipconfig getifaddr en0)
+```
+
+The config blocks relaying to private and loopback addresses, so a TURN credential can't be used to reach machines on your network. When both test peers run on one machine, each relays to the other's relay address, which is your own LAN IP. `--allowed-peer-ip` permits exactly that address. Don't pass it in production.
+
+**Prove TURN works.** Force relay-only, then join a call:
+
+```bash
+TURN_URLS='turn:localhost:3478?transport=udp' TURN_SECRET=dev-secret ICE_TRANSPORT_POLICY=relay npm run dev
+```
+
+The call should still connect. In `chrome://webrtc-internals`, the selected candidate pair should be `relay`. If coturn isn't running, the call stays on "Connecting…".
+
+For production, put coturn on a public host, add TLS (`turns:` on 5349), and open the relay port range.
+
 ## Tests
 
 ```bash
@@ -45,8 +82,10 @@ npm run test:e2e                 # two Chromium pages with fake cameras run a re
 |---|---|
 | `server/src/protocol.ts` | Message types and `parseClientMessage` validation |
 | `server/src/rooms.ts` | Pure room bookkeeping: join, relay, leave, 2-person cap |
-| `server/src/server.ts` | `ws` wiring, heartbeat that drops dead sockets |
+| `server/src/server.ts` | `ws` wiring, heartbeat that drops dead sockets, `GET /ice-config` |
+| `server/src/ice.ts` | STUN/TURN settings from env vars and time-limited TURN credentials |
 | `client/src/webrtc/useVideoCall.ts` | All `RTCPeerConnection` logic: offer/answer, ICE buffering, state machine |
+| `client/src/webrtc/iceConfig.ts` | Fetches `/ice-config` before each peer connection |
 | `client/src/signaling/SignalingClient.ts` | Typed WebSocket wrapper |
 | `client/src/App.tsx` | Join screen, video tiles, mute/camera/hang-up |
 | `desktop/src/main.ts` | Electron window, origin-scoped media permissions, macOS camera/mic prompt |
@@ -64,7 +103,7 @@ npm run test:e2e                 # two Chromium pages with fake cameras run a re
 
 ## Known limitations
 
-- STUN only, with no TURN server, so calls across some corporate or symmetric NATs will fail.
+- `/ice-config` is unauthenticated, so anyone who can reach the signaling server can get short-lived TURN credentials. Add auth or rate limiting before you expose it publicly.
 - `getUserMedia` needs a secure context. `localhost` counts as secure, but `http://<LAN-IP>:5173` from another device does not. Use HTTPS or a tunnel to test across machines.
 - Electron is not packaged yet, and there is no CSP.
 

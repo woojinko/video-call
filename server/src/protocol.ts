@@ -26,6 +26,19 @@ export interface IceCandidate {
   usernameFragment?: string | null;
 }
 
+/** One STUN/TURN entry; structurally an RTCIceServer. */
+export interface IceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+/** Body of `GET /ice-config` on the signaling server; structurally an RTCConfiguration. */
+export interface IceConfig {
+  iceServers: IceServer[];
+  iceTransportPolicy?: 'all' | 'relay';
+}
+
 /** Messages a client sends to the server. */
 export type ClientMessage =
   | { type: 'join'; roomId: string }

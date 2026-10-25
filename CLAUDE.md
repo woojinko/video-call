@@ -21,6 +21,7 @@
 
 1. A joins room → server replies `joined {peerCount:1}` → A shows "waiting".
 2. B joins → B gets `joined {peerCount:2}`; A gets `peer-joined`. **A (already in the room) is always the offerer.**
+   Before creating its `RTCPeerConnection`, each side fetches `GET /ice-config` from the signaling server (STUN plus short-lived TURN credentials; see README "TURN").
 3. A: `createOffer` → `setLocalDescription` → send `offer`. B: `setRemoteDescription` → `createAnswer` → send `answer`.
 4. ICE candidates trickle both ways via `ice-candidate`. Candidates that arrive before the remote description are buffered in `pendingCandidatesRef` and flushed after `setRemoteDescription`.
 5. On leave/disconnect the server sends `peer-left`; the remaining side closes its `RTCPeerConnection` and returns to "waiting".

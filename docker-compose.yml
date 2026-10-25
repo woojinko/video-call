@@ -1,0 +1,17 @@
+# Local TURN server for testing relayed calls. See README "TURN".
+#   TURN_SECRET=dev-secret TURN_ALLOWED_PEER_IP=$(hostname -I | cut -d' ' -f1) docker compose up coturn
+services:
+  coturn:
+    image: coturn/coturn:4.6
+    # TURN hands out relay addresses on the host's own IP, so it needs host networking.
+    # Linux: works as is. macOS/Windows: enable host networking in Docker Desktop
+    # (Settings → Resources → Network), or run coturn natively (see README).
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"
+      - "--static-auth-secret=${TURN_SECRET:?set TURN_SECRET}"
+      # Your machine's LAN IP: both test peers' relay addresses live there, and private ranges are denied.
+      - "--allowed-peer-ip=${TURN_ALLOWED_PEER_IP:?set TURN_ALLOWED_PEER_IP to this machine's LAN IP}"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SignalingClient } from '../signaling/SignalingClient';
 import type { IceCandidate, ServerMessage } from '../signaling/protocol';
+import { RtcConfigSource } from './iceConfig';
 
 export type CallStatus =
   | 'idle' // not in a room
@@ -13,12 +14,6 @@ export type CallStatus =
   | 'error';
 
 const SIGNALING_URL: string = import.meta.env.VITE_SIGNALING_URL ?? 'ws://localhost:8080';
-
-// Public STUN lets peers discover their public address. For calls across strict NATs
-// you also need a TURN server (relay) — see README "Ideas for improvements".
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-};
 
 export interface VideoCall {
   status: CallStatus;
@@ -52,6 +47,13 @@ export function useVideoCall(): VideoCall {
   // Signaling messages are processed strictly in order; WebRTC calls are async
   // and interleaving setRemoteDescription/addIceCandidate causes subtle bugs.
   const messageQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const rtcConfigRef = useRef(new RtcConfigSource(SIGNALING_URL));
+
+  const enqueue = useCallback((label: string, task: () => Promise<void>) => {
+    messageQueueRef.current = messageQueueRef.current
+      .then(task)
+      .catch((err: unknown) => console.error('[webrtc] failed handling', label, err));
+  }, []);
 
   const closePeerConnection = useCallback(() => {
     const pc = pcRef.current;
@@ -66,9 +68,9 @@ export function useVideoCall(): VideoCall {
     setRemoteStream(null);
   }, []);
 
-  const createPeerConnection = useCallback((): RTCPeerConnection => {
+  const createPeerConnection = useCallback((rtcConfig: RTCConfiguration): RTCPeerConnection => {
     closePeerConnection();
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(rtcConfig);
     pcRef.current = pc;
 
     const stream = localStreamRef.current;
@@ -96,13 +98,61 @@ export function useVideoCall(): VideoCall {
           break;
         case 'failed':
           setStatus('reconnecting');
-          pc.restartIce();
+          // TURN credentials from call setup may have expired by now; restart with fresh ones.
+          enqueue('ice-restart', async () => {
+            try {
+              const rtcConfig = await rtcConfigRef.current.fresh();
+              if (pcRef.current !== pc) return;
+              pc.setConfiguration(rtcConfig);
+            } catch (err) {
+              console.warn('[webrtc] could not refresh ICE config, restarting with the old one:', err);
+            }
+            if (pcRef.current === pc) pc.restartIce();
+          });
           break;
       }
     };
 
     return pc;
-  }, [closePeerConnection]);
+  }, [closePeerConnection, enqueue]);
+
+  const stopLocalMedia = useCallback(() => {
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    setLocalStream(null);
+  }, []);
+
+  const hangUp = useCallback(() => {
+    signalingRef.current?.send({ type: 'leave' });
+    signalingRef.current?.close();
+    signalingRef.current = null;
+    closePeerConnection();
+    stopLocalMedia();
+    messageQueueRef.current = Promise.resolve();
+    setRoomId(null);
+    setStatus((s) => (s === 'room-full' || s === 'error' ? s : 'idle'));
+  }, [closePeerConnection, stopLocalMedia]);
+
+  // STUN/TURN config comes from the signaling server. Returns null if the user hung up while
+  // it loaded, or if it couldn't be loaded (then the call ends with a visible error rather than
+  // silently skipping TURN or a relay-only policy).
+  const preparePeerConnection = useCallback(
+    async (signaling: SignalingClient): Promise<RTCPeerConnection | null> => {
+      try {
+        const rtcConfig = await rtcConfigRef.current.get();
+        return signalingRef.current === signaling ? createPeerConnection(rtcConfig) : null;
+      } catch (err) {
+        console.error('[webrtc] could not set up the peer connection:', err);
+        if (signalingRef.current === signaling) {
+          setError('Could not load connection settings from the server.');
+          setStatus('error');
+          hangUp();
+        }
+        return null;
+      }
+    },
+    [createPeerConnection, hangUp],
+  );
 
   const flushPendingCandidates = useCallback(async (pc: RTCPeerConnection) => {
     const pending = pendingCandidatesRef.current;
@@ -123,7 +173,8 @@ export function useVideoCall(): VideoCall {
         case 'peer-joined': {
           // We were here first, so we are the caller.
           setStatus('connecting');
-          const pc = createPeerConnection();
+          const pc = await preparePeerConnection(signaling);
+          if (!pc) return;
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           signaling.send({ type: 'offer', sdp: { type: 'offer', sdp: offer.sdp ?? '' } });
@@ -132,7 +183,8 @@ export function useVideoCall(): VideoCall {
 
         case 'offer': {
           setStatus('connecting');
-          const pc = pcRef.current ?? createPeerConnection();
+          const pc = pcRef.current ?? (await preparePeerConnection(signaling));
+          if (!pc) return;
           await pc.setRemoteDescription(message.sdp);
           await flushPendingCandidates(pc);
           const answer = await pc.createAnswer();
@@ -160,6 +212,7 @@ export function useVideoCall(): VideoCall {
         case 'peer-left':
           closePeerConnection();
           setStatus('waiting');
+          rtcConfigRef.current.prefetch(); // Ready for whoever joins next.
           break;
 
         case 'room-full':
@@ -172,31 +225,15 @@ export function useVideoCall(): VideoCall {
           break;
       }
     },
-    [closePeerConnection, createPeerConnection, flushPendingCandidates],
+    [closePeerConnection, preparePeerConnection, flushPendingCandidates],
   );
-
-  const stopLocalMedia = useCallback(() => {
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    setLocalStream(null);
-  }, []);
-
-  const hangUp = useCallback(() => {
-    signalingRef.current?.send({ type: 'leave' });
-    signalingRef.current?.close();
-    signalingRef.current = null;
-    closePeerConnection();
-    stopLocalMedia();
-    messageQueueRef.current = Promise.resolve();
-    setRoomId(null);
-    setStatus((s) => (s === 'room-full' || s === 'error' ? s : 'idle'));
-  }, [closePeerConnection, stopLocalMedia]);
 
   const join = useCallback(
     async (requestedRoomId: string) => {
       setError(null);
       setStatus('starting');
       setRoomId(requestedRoomId);
+      rtcConfigRef.current.prefetch(); // Loads while the camera starts.
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -211,11 +248,7 @@ export function useVideoCall(): VideoCall {
         signalingRef.current = signaling;
         await signaling.connect();
 
-        signaling.onMessage((message) => {
-          messageQueueRef.current = messageQueueRef.current
-            .then(() => handleMessage(message))
-            .catch((err: unknown) => console.error('[webrtc] failed handling', message.type, err));
-        });
+        signaling.onMessage((message) => enqueue(message.type, () => handleMessage(message)));
         signaling.onClose(() => {
           if (signalingRef.current === signaling) {
             setError('Lost connection to the signaling server.');
@@ -237,7 +270,7 @@ export function useVideoCall(): VideoCall {
         hangUp();
       }
     },
-    [handleMessage, hangUp],
+    [enqueue, handleMessage, hangUp],
   );
 
   const toggleMic = useCallback(() => {

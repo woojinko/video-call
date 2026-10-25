@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createConnection } from 'node:net';
 import { WebSocket } from 'ws';
 import { createSignalingServer } from '../src/server.js';
-import type { ServerMessage } from '../src/protocol.js';
+import type { IceConfig, ServerMessage } from '../src/protocol.js';
 
 /** Small helper: a ws client that buffers messages so tests can await the next one. */
 function connect(url: string) {
@@ -80,4 +81,55 @@ test('malformed messages get an error reply instead of crashing the server', asy
 
   c.ws.close();
   await server.close();
+});
+
+test('GET /ice-config serves STUN plus fresh TURN credentials on the signaling port', async () => {
+  const server = createSignalingServer({
+    port: 0,
+    host: '127.0.0.1',
+    ice: { stunUrls: ['stun:stun.example.com'], turn: { urls: ['turn:127.0.0.1:3478'], secret: 's3cret', ttlSeconds: 60 }, relayOnly: false },
+  });
+  const port = await server.ready;
+
+  const res = await fetch(`http://127.0.0.1:${port}/ice-config`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  const config = (await res.json()) as IceConfig;
+  assert.deepEqual(config.iceServers[0], { urls: ['stun:stun.example.com'] });
+  assert.deepEqual(config.iceServers[1]?.urls, ['turn:127.0.0.1:3478']);
+  assert.match(config.iceServers[1]?.username ?? '', /^\d+:video-call$/);
+
+  assert.equal((await fetch(`http://127.0.0.1:${port}/nope`)).status, 404);
+
+  await server.close();
+});
+
+test('a malformed HTTP request line gets an error response instead of crashing the server', async () => {
+  const server = createSignalingServer({ port: 0, host: '127.0.0.1' });
+  const port = await server.ready;
+
+  const reply = await new Promise<string>((resolve, reject) => {
+    const socket = createConnection(port, '127.0.0.1', () => socket.write('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n'));
+    let data = '';
+    socket.on('data', (chunk) => (data += chunk.toString()));
+    socket.on('end', () => resolve(data));
+    socket.on('error', reject);
+  });
+  assert.match(reply, /^HTTP\/1\.1 404/);
+
+  // Still serving afterwards.
+  assert.equal((await fetch(`http://127.0.0.1:${port}/ice-config`)).status, 200);
+  await server.close();
+});
+
+test('starting on a port that is already taken rejects `ready` instead of crashing', async () => {
+  const first = createSignalingServer({ port: 0, host: '127.0.0.1' });
+  const port = await first.ready;
+
+  const second = createSignalingServer({ port, host: '127.0.0.1' });
+  await assert.rejects(second.ready, /EADDRINUSE/);
+
+  await second.close();
+  await first.close();
 });
