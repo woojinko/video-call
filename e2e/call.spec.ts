@@ -29,6 +29,28 @@ test('two peers connect and receive each other’s audio + video', async ({ cont
     .toBeGreaterThan(0);
 });
 
+test('the stats overlay shows live numbers from getStats()', async ({ context }) => {
+  const room = `stats-${Date.now()}`;
+  const alice = await context.newPage();
+  const bob = await context.newPage();
+
+  await joinRoom(alice, room);
+  await joinRoom(bob, room);
+  await expect(bob.locator('.status-connected')).toBeVisible({ timeout: 15_000 });
+
+  await bob.getByRole('button', { name: 'Stats' }).click();
+  const overlay = bob.getByRole('complementary', { name: 'Connection stats' });
+  // Both pages run on one machine, so ICE should pick a direct host or srflx route.
+  await expect(overlay.locator('[data-stat="route"]')).toHaveText(/^(host|srflx|prflx) → (host|srflx|prflx)/);
+  await expect(overlay.locator('[data-stat="rtt"]')).toHaveText(/^\d+ ms$/);
+  // Bitrates need two samples, so they appear about a second after the overlay opens.
+  await expect(overlay.locator('[data-stat="video-in"]')).toHaveText(/^[1-9]\d* kbps · \d+×\d+/);
+  await expect(overlay.locator('[data-stat="video-out"]')).toHaveText(/^[1-9]\d* kbps · \d+×\d+/);
+
+  await bob.getByRole('button', { name: 'Stats' }).click();
+  await expect(overlay).toBeHidden();
+});
+
 test('a third person is turned away, and hang-up returns the other peer to waiting', async ({ context }) => {
   const room = `full-${Date.now()}`;
   const [a, b, c] = await Promise.all([context.newPage(), context.newPage(), context.newPage()]);

@@ -71,7 +71,7 @@ For production, put coturn on a public host, add TLS (`turns:` on 5349), and ope
 
 ```bash
 npm run typecheck
-npm test                         # server: room logic, validation, and a real WebSocket integration test
+npm test                         # server: room logic, validation, real WebSocket integration; client: stats math (vitest)
 npx playwright install chromium  # once
 npm run test:e2e                 # two Chromium pages with fake cameras run a real call
 ```
@@ -85,9 +85,11 @@ npm run test:e2e                 # two Chromium pages with fake cameras run a re
 | `server/src/server.ts` | `ws` wiring, heartbeat that drops dead sockets, `GET /ice-config` |
 | `server/src/ice.ts` | STUN/TURN settings from env vars and time-limited TURN credentials |
 | `client/src/webrtc/useVideoCall.ts` | All `RTCPeerConnection` logic: offer/answer, ICE buffering, state machine |
+| `client/src/webrtc/stats.ts` | Pure `getStats()` summary: RTT, bitrates, loss, fps, resolution, selected candidate pair |
+| `client/src/webrtc/useCallStats.ts` | Polls `getStats()` once a second while the stats overlay is open |
 | `client/src/webrtc/iceConfig.ts` | Fetches `/ice-config` before each peer connection |
 | `client/src/signaling/SignalingClient.ts` | Typed WebSocket wrapper |
-| `client/src/App.tsx` | Join screen, video tiles, mute/camera/hang-up |
+| `client/src/App.tsx` | Join screen, video tiles, mute/camera/stats/hang-up |
 | `desktop/src/main.ts` | Electron window, origin-scoped media permissions, macOS camera/mic prompt |
 | `desktop/src/preload.ts` | Minimal `contextBridge` API (`window.desktop`) |
 | `e2e/call.spec.ts` | Playwright end-to-end call tests |
@@ -99,6 +101,7 @@ npm run test:e2e                 # two Chromium pages with fake cameras run a re
 - **Ordered signaling.** Incoming messages go through a promise queue so async WebRTC calls never interleave.
 - **Refs and state.** `RTCPeerConnection` and `MediaStream` objects live in refs. Only what the UI shows lives in React state.
 - **Server validates everything.** Payloads are size-capped, typed, and checked. Rooms are capped at 2. A heartbeat removes dead sockets so rooms don't leak.
+- **Stats from deltas.** `getStats()` counters are cumulative, so bitrate and packet loss come from the change between two reports a second apart. The "Route" line shows the selected candidate pair, so `relay` confirms TURN is in use. A counter that goes backwards (a new peer connection) yields no rate rather than a wrong one.
 - **Electron hardening.** `contextIsolation`, `sandbox`, no `nodeIntegration`, a tiny preload API, and camera/mic permission granted only to our own origin. Navigation away from the app is blocked.
 
 ## Known limitations

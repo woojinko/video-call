@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from 'react';
+import { StatsOverlay } from './components/StatsOverlay';
 import { VideoTile } from './components/VideoTile';
+import { useCallStats } from './webrtc/useCallStats';
 import { useVideoCall, type CallStatus } from './webrtc/useVideoCall';
 
 const STATUS_TEXT: Record<CallStatus, string> = {
@@ -21,6 +23,8 @@ export default function App() {
   const call = useVideoCall();
   const [roomInput, setRoomInput] = useState(() => new URLSearchParams(location.search).get('room') ?? randomRoomId());
   const inCall = call.status !== 'idle' && call.status !== 'room-full' && call.status !== 'error';
+  const [showStats, setShowStats] = useState(false);
+  const stats = useCallStats(call.getStats, inCall && showStats);
   const platform = window.desktop?.platform;
 
   const onSubmit = (e: FormEvent) => {
@@ -69,6 +73,7 @@ export default function App() {
               className="remote"
             />
             <VideoTile stream={call.localStream} label="You" muted mirrored className="local" />
+            {showStats && <StatsOverlay stats={stats} />}
           </section>
 
           <nav className="controls">
@@ -77,6 +82,9 @@ export default function App() {
             </button>
             <button onClick={call.toggleCamera} aria-pressed={!call.cameraEnabled}>
               {call.cameraEnabled ? 'Camera off' : 'Camera on'}
+            </button>
+            <button onClick={() => setShowStats((s) => !s)} aria-pressed={showStats}>
+              Stats
             </button>
             <button className="danger" onClick={call.hangUp}>
               Hang up
