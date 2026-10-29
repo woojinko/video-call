@@ -13,7 +13,7 @@
 - `npm run dev` — server + client. Open http://localhost:5173 in two tabs, same room.
 - `npm run dev:desktop` — server + client + Electron window.
 - `npm run typecheck` — all three packages.
-- `npm test` — server unit + integration tests (`node:test` via `tsx --test`).
+- `npm test` — server unit + integration tests (`node:test` via `tsx --test`), then client unit tests (vitest).
 - `npm run test:e2e` — Playwright; starts `npm run dev` itself if nothing is running. First time: `npx playwright install chromium`.
 - `npm run build` — build everything.
 
@@ -26,7 +26,7 @@
 4. ICE candidates trickle both ways via `ice-candidate`. Candidates that arrive before the remote description are buffered in `pendingCandidatesRef` and flushed after `setRemoteDescription`.
 5. On leave/disconnect the server sends `peer-left`; the remaining side closes its `RTCPeerConnection` and returns to "waiting".
 
-Key files: `client/src/webrtc/useVideoCall.ts` (all peer-connection logic), `server/src/rooms.ts` (pure room logic), `server/src/server.ts` (socket wiring), `server/src/protocol.ts` (message types + validation).
+Key files: `client/src/webrtc/useVideoCall.ts` (all peer-connection logic), `client/src/webrtc/stats.ts` (pure `getStats()` math for the stats overlay), `server/src/rooms.ts` (pure room logic), `server/src/server.ts` (socket wiring), `server/src/protocol.ts` (message types + validation).
 
 ## Conventions
 

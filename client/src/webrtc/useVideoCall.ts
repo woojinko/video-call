@@ -27,6 +27,8 @@ export interface VideoCall {
   hangUp(): void;
   toggleMic(): void;
   toggleCamera(): void;
+  /** Current peer connection's stats report, or null when there is no peer connection. */
+  getStats(): Promise<RTCStatsReport | null>;
 }
 
 export function useVideoCall(): VideoCall {
@@ -287,6 +289,12 @@ export function useVideoCall(): VideoCall {
     setCameraEnabled(track.enabled);
   }, []);
 
+  // Read-only, so it doesn't go through messageQueueRef: getStats() never changes connection state.
+  const getStats = useCallback(async () => {
+    const pc = pcRef.current;
+    return pc ? pc.getStats() : null;
+  }, []);
+
   // Clean up on unmount (also covers closing the Electron window).
   useEffect(() => {
     const onUnload = () => signalingRef.current?.send({ type: 'leave' });
@@ -311,5 +319,6 @@ export function useVideoCall(): VideoCall {
     hangUp,
     toggleMic,
     toggleCamera,
+    getStats,
   };
 }

@@ -14,7 +14,7 @@
     "build": "npm run build -w server && npm run build -w client && npm run build -w desktop",
     "start:desktop": "npm run build -w client && npm run build -w desktop && npm run start -w desktop",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client && npm run typecheck -w desktop",
-    "test": "npm run test -w server",
+    "test": "npm run test -w server && npm run test -w client",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
